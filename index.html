@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-title" content="Razão">
 <meta name="theme-color" content="#0B0E14">
 <title>Razão — Painel Financeiro</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -203,6 +206,19 @@
       .replace(/'/g, '&#39;');
   }
 
+  function parseAmount(str) {
+    var s = String(str).trim();
+    if (s.indexOf(',') !== -1 && s.indexOf('.') !== -1) {
+      // ambos presentes: ponto é separador de milhar, vírgula é decimal
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else if (s.indexOf(',') !== -1) {
+      // só vírgula: é o separador decimal
+      s = s.replace(',', '.');
+    }
+    // só ponto, ou nenhum separador: já está em formato válido
+    return parseFloat(s);
+  }
+
   function formatCurrency(value) {
     return (value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   }
@@ -282,7 +298,7 @@
   }
 
   function handleAdd() {
-    var amount = parseFloat(String(state.form.amount).replace(',', '.'));
+    var amount = parseAmount(state.form.amount);
     if (!state.form.description.trim()) {
       state.formError = 'Preencha uma descrição.';
       render();
@@ -350,7 +366,7 @@
   }
 
   function handleSaveLimit() {
-    var val = parseFloat(String(state.limitDraft).replace(',', '.'));
+    var val = parseAmount(state.limitDraft);
     if (!isNaN(val) && val >= 0) state.monthlyLimit = val;
     state.editingLimit = false;
     saveState();
@@ -358,7 +374,7 @@
   }
 
   function handleSaveGoal() {
-    var val = parseFloat(String(state.goalDraft).replace(',', '.'));
+    var val = parseAmount(state.goalDraft);
     if (!isNaN(val) && val >= 0) state.savingsGoal = val;
     state.editingGoal = false;
     saveState();
@@ -398,352 +414,4 @@
         var data = JSON.parse(e.target.result);
         if (!Array.isArray(data.transactions)) throw new Error('formato inválido');
         state.transactions = data.transactions;
-        state.monthlyLimit = typeof data.monthlyLimit === 'number' ? data.monthlyLimit : state.monthlyLimit;
-        state.savingsGoal = typeof data.savingsGoal === 'number' ? data.savingsGoal : 0;
-        state.recurring = Array.isArray(data.recurring) ? data.recurring : [];
-        state.limitDraft = String(state.monthlyLimit);
-        state.goalDraft = String(state.savingsGoal);
-        state.backupMsg = { type: 'success', text: 'Backup importado com sucesso.' };
-        saveState();
-        render();
-      } catch (err) {
-        state.backupMsg = { type: 'error', text: 'Não foi possível importar este arquivo.' };
-        render();
-      }
-    };
-    reader.readAsText(file);
-  }
-
-  function render() {
-    var transactions = state.transactions;
-    var totalIncome = transactions.filter(function (t) { return t.type === 'income'; }).reduce(function (s, t) { return s + t.amount; }, 0);
-    var totalExpense = transactions.filter(function (t) { return t.type === 'expense'; }).reduce(function (s, t) { return s + t.amount; }, 0);
-    var balance = totalIncome - totalExpense;
-
-    var now = new Date();
-    var currentMonthKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
-    var monthExpense = transactions
-      .filter(function (t) { return t.type === 'expense' && t.date && t.date.indexOf(currentMonthKey) === 0; })
-      .reduce(function (s, t) { return s + t.amount; }, 0);
-    var monthIncome = transactions
-      .filter(function (t) { return t.type === 'income' && t.date && t.date.indexOf(currentMonthKey) === 0; })
-      .reduce(function (s, t) { return s + t.amount; }, 0);
-    var monthNet = monthIncome - monthExpense;
-    var percentUsed = state.monthlyLimit > 0 ? (monthExpense / state.monthlyLimit) * 100 : 0;
-    var clamped = Math.max(0, Math.min(percentUsed, 100));
-
-    var status = { label: 'EM DIA', color: 'var(--teal)', glow: 'var(--teal-glow)' };
-    if (percentUsed >= 100) status = { label: 'ESTOURADO', color: 'var(--rose)', glow: 'var(--rose-glow)' };
-    else if (percentUsed >= 80) status = { label: 'ATENÇÃO', color: 'var(--amber)', glow: 'var(--amber-glow)' };
-
-    var monthName = now.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-    var sortedTx = transactions.slice().sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
-
-    var months = getLastMonths(6);
-    var monthStats = months.map(function (m, idx) {
-      var inc = transactions.filter(function (t) { return t.type === 'income' && t.date && t.date.indexOf(m.key) === 0; }).reduce(function (s, t) { return s + t.amount; }, 0);
-      var exp = transactions.filter(function (t) { return t.type === 'expense' && t.date && t.date.indexOf(m.key) === 0; }).reduce(function (s, t) { return s + t.amount; }, 0);
-      return { key: m.key, label: m.label, income: inc, expense: exp, isCurrent: idx === months.length - 1 };
-    });
-    var maxBar = monthStats.reduce(function (mx, m) { return Math.max(mx, m.income, m.expense); }, 0);
-    var maxScale = Math.max(state.monthlyLimit, maxBar, 1) * 1.15;
-    var limitPct = Math.min((state.monthlyLimit / maxScale) * 100, 100);
-
-    var catTotals = {};
-    transactions.filter(function (t) { return t.type === 'expense' && t.date && t.date.indexOf(currentMonthKey) === 0; }).forEach(function (t) {
-      catTotals[t.category] = (catTotals[t.category] || 0) + t.amount;
-    });
-    var catList = Object.keys(catTotals).map(function (k) { return { category: k, total: catTotals[k] }; });
-    catList.sort(function (a, b) { return b.total - a.total; });
-
-    var goalPct = state.savingsGoal > 0 ? Math.max(0, Math.min((monthNet / state.savingsGoal) * 100, 100)) : 0;
-    var goalColor = monthNet < 0 ? 'var(--rose)' : (state.savingsGoal > 0 && monthNet >= state.savingsGoal ? 'var(--teal)' : 'var(--amber)');
-    var goalMsg;
-    if (state.savingsGoal <= 0) {
-      goalMsg = 'Defina uma meta para acompanhar.';
-    } else if (monthNet < 0) {
-      goalMsg = 'Gastos maiores que entradas este mês.';
-    } else if (monthNet >= state.savingsGoal) {
-      goalMsg = 'Meta batida! Você guardou ' + formatCurrency(monthNet) + '.';
-    } else {
-      goalMsg = 'Faltam ' + formatCurrency(state.savingsGoal - monthNet) + ' para a meta.';
-    }
-
-    var r = 54;
-    var circumference = 2 * Math.PI * r;
-    var offset = circumference * (1 - clamped / 100);
-
-    var html = '';
-
-    html += '<header class="topbar">';
-    html += '<div><div class="eyebrow">Painel financeiro</div><div class="brand">RAZÃO</div></div>';
-    html += '<div class="status-pill"><span class="led' + (percentUsed >= 100 ? ' blinking' : '') + '" style="background:' + status.color + '; box-shadow:0 0 6px 2px ' + status.glow + ';"></span><span style="color:' + status.color + '">' + status.label + '</span></div>';
-    html += '</header>';
-    html += '<div class="month-label">' + escapeHtml(monthName) + '</div>';
-
-    html += '<div class="stats-grid">';
-    html += '<div class="stat-card stat-balance"><div class="stat-label">Saldo</div><div class="stat-value" style="color:' + (balance >= 0 ? 'var(--teal)' : 'var(--rose)') + '">' + formatCurrency(balance) + '</div></div>';
-    html += '<div class="stat-card"><div class="stat-label">Entradas</div><div class="stat-value" style="color:var(--teal)">+' + formatCurrency(totalIncome) + '</div></div>';
-    html += '<div class="stat-card"><div class="stat-label">Saídas</div><div class="stat-value" style="color:var(--rose)">\u2212' + formatCurrency(totalExpense) + '</div></div>';
-    html += '</div>';
-
-    html += '<div class="card gauge-card' + (percentUsed >= 100 ? ' gauge-alert' : '') + '">';
-    html += '<div class="card-header">Limite mensal</div>';
-    html += '<div class="gauge-wrap"><svg width="140" height="140" viewBox="0 0 140 140">';
-    html += '<circle cx="70" cy="70" r="' + r + '" stroke="var(--border)" stroke-width="12" fill="none"/>';
-    html += '<circle cx="70" cy="70" r="' + r + '" stroke="' + status.color + '" stroke-width="12" fill="none" stroke-linecap="round" stroke-dasharray="' + circumference.toFixed(1) + '" stroke-dashoffset="' + offset.toFixed(1) + '" transform="rotate(-90 70 70)" style="transition:stroke-dashoffset 0.4s ease;"/>';
-    html += '</svg><div class="gauge-center"><div class="gauge-pct" style="color:' + status.color + '">' + Math.round(clamped) + '%</div><div class="gauge-sub">do limite</div></div></div>';
-    html += '<div class="gauge-info">';
-    if (state.editingLimit) {
-      html += '<div class="limit-edit-row">';
-      html += '<input id="limit-input" class="limit-input" type="text" inputmode="decimal" value="' + escapeHtml(state.limitDraft) + '">';
-      html += '<button id="save-limit-btn" class="btn-dark-sm">Salvar</button>';
-      html += '</div>';
-    } else {
-      html += '<div class="limit-row">';
-      html += '<span class="limit-value">' + formatCurrency(state.monthlyLimit) + '</span>';
-      html += '<button id="edit-limit-btn" class="edit-link">editar</button>';
-      html += '</div>';
-    }
-    html += '<div class="spent-row">Gasto: <strong>' + formatCurrency(monthExpense) + '</strong></div>';
-    html += '</div>';
-    if (percentUsed >= 80) {
-      var msg = percentUsed >= 100
-        ? 'Limite ultrapassado em ' + formatCurrency(monthExpense - state.monthlyLimit) + '.'
-        : 'Faltam ' + formatCurrency(state.monthlyLimit - monthExpense) + ' para o limite.';
-      html += '<div class="alert-line" style="color:' + status.color + '">' + msg + '</div>';
-    }
-    html += '</div>';
-
-    html += '<div class="card">';
-    html += '<div class="card-header">Meta de economia · este mês</div>';
-    if (state.editingGoal) {
-      html += '<div class="limit-edit-row">';
-      html += '<input id="goal-input" class="limit-input" type="text" inputmode="decimal" value="' + escapeHtml(state.goalDraft) + '">';
-      html += '<button id="save-goal-btn" class="btn-dark-sm">Salvar</button>';
-      html += '</div>';
-    } else {
-      html += '<div class="limit-row">';
-      html += '<span class="limit-value">' + formatCurrency(state.savingsGoal) + '</span>';
-      html += '<button id="edit-goal-btn" class="edit-link">editar</button>';
-      html += '</div>';
-    }
-    html += '<div class="progress-track"><div class="progress-fill" style="width:' + goalPct.toFixed(1) + '%; background:' + goalColor + '"></div></div>';
-    html += '<div class="goal-msg" style="color:' + goalColor + '">' + escapeHtml(goalMsg) + '</div>';
-    html += '</div>';
-
-    html += '<div class="card">';
-    html += '<div class="card-header">Comparativo mensal</div>';
-    html += '<div class="chart-legend-top"><span><span class="dot" style="background:var(--teal)"></span>Entradas</span><span><span class="dot" style="background:var(--rose)"></span>Saídas</span></div>';
-    html += '<div class="bar-chart">';
-    html += '<div class="limit-line" style="bottom:' + limitPct.toFixed(1) + '%"></div>';
-    html += '<div class="bars-row">';
-    monthStats.forEach(function (m) {
-      var incPct = (m.income / maxScale) * 100;
-      var expPct = (m.expense / maxScale) * 100;
-      var overLimit = state.monthlyLimit > 0 && m.expense > state.monthlyLimit;
-      html += '<div class="bar-col">';
-      html += '<div class="bar-wrap">';
-      html += '<div class="bar bar-income" style="height:' + incPct.toFixed(1) + '%"></div>';
-      html += '<div class="bar bar-expense" style="height:' + expPct.toFixed(1) + '%' + (overLimit ? '; box-shadow:0 0 8px 0 var(--rose-glow)' : '') + '"></div>';
-      html += '</div>';
-      html += '<div class="bar-label' + (m.isCurrent ? ' bar-label-current' : '') + '">' + m.label + '</div>';
-      html += '</div>';
-    });
-    html += '</div></div>';
-    html += '<div class="chart-legend">tracejado = limite mensal de gastos</div>';
-    html += '</div>';
-
-    html += '<div class="card">';
-    html += '<div class="card-header">Gastos por categoria · este mês</div>';
-    if (catList.length === 0) {
-      html += '<div class="empty-state">Nenhum gasto registrado este mês ainda.</div>';
-    } else {
-      catList.forEach(function (c) {
-        var pct = monthExpense > 0 ? (c.total / monthExpense) * 100 : 0;
-        html += '<div class="cat-row">';
-        html += '<div class="cat-row-top"><span class="cat-name">' + escapeHtml(c.category) + '</span><span class="cat-amount">' + formatCurrency(c.total) + '</span></div>';
-        html += '<div class="cat-bar-track"><div class="cat-bar-fill" style="width:' + pct.toFixed(1) + '%"></div></div>';
-        html += '</div>';
-      });
-    }
-    html += '</div>';
-
-    if (!state.showForm) {
-      html += '<button id="open-form-btn" class="btn-primary">+ Novo lançamento</button>';
-    } else {
-      html += '<div class="form-panel">';
-      html += '<div class="type-row">';
-      html += '<button id="type-income-btn" class="type-btn' + (state.form.type === 'income' ? ' active-income' : '') + '">Entrada</button>';
-      html += '<button id="type-expense-btn" class="type-btn' + (state.form.type === 'expense' ? ' active-expense' : '') + '">Saída</button>';
-      html += '</div>';
-
-      html += '<label class="field-label">Valor</label>';
-      html += '<input id="amount-input" class="field-input mono" type="text" inputmode="decimal" placeholder="0,00" value="' + escapeHtml(state.form.amount) + '">';
-
-      html += '<label class="field-label">Descrição</label>';
-      html += '<input id="desc-input" class="field-input" type="text" placeholder="Ex: Mercado, Salário..." value="' + escapeHtml(state.form.description) + '">';
-
-      html += '<div class="field-row">';
-      html += '<div class="field-half"><label class="field-label">Categoria</label><select id="category-select" class="field-input" style="margin-bottom:0">';
-      CATEGORIES.forEach(function (c) {
-        html += '<option value="' + escapeHtml(c) + '"' + (state.form.category === c ? ' selected' : '') + '>' + escapeHtml(c) + '</option>';
-      });
-      html += '</select></div>';
-      html += '<div class="field-half"><label class="field-label">Data</label><input id="date-input" class="field-input" style="margin-bottom:0" type="date" value="' + escapeHtml(state.form.date) + '"></div>';
-      html += '</div>';
-
-      if (!state.editingId) {
-        html += '<label class="checkbox-row"><input type="checkbox" id="recurring-checkbox"' + (state.form.recurring ? ' checked' : '') + '> Repetir todo mês</label>';
-      }
-
-      if (state.formError) {
-        html += '<div class="form-error">' + escapeHtml(state.formError) + '</div>';
-      }
-
-      html += '<div class="form-actions">';
-      html += '<button id="submit-btn" class="btn-submit">' + (state.editingId ? 'Salvar alterações' : 'Lançar') + '</button>';
-      html += '<button id="cancel-btn" class="btn-cancel">Cancelar</button>';
-      html += '</div>';
-      html += '</div>';
-    }
-
-    html += '<div class="section-label">Lançamentos recentes</div>';
-    if (sortedTx.length === 0) {
-      html += '<div class="empty-state">Nenhum lançamento ainda.<br>Toque em "+ Novo lançamento" para começar.</div>';
-    } else {
-      html += '<div class="list-card">';
-      sortedTx.forEach(function (t) {
-        var color = t.type === 'income' ? 'var(--teal)' : 'var(--rose)';
-        var sign = t.type === 'income' ? '+' : '\u2212';
-        html += '<div class="tx-row ' + (t.type === 'income' ? 'income' : 'expense') + '">';
-        html += '<div class="tx-date">' + formatDateShort(t.date) + '</div>';
-        html += '<div class="tx-mid"><div class="tx-desc">' + escapeHtml(t.description) + '</div><div class="tx-cat">' + escapeHtml(t.category) + '</div></div>';
-        html += '<div class="tx-amount" style="color:' + color + '">' + sign + ' ' + formatCurrency(t.amount) + '</div>';
-        html += '<button class="tx-edit" data-id="' + escapeHtml(t.id) + '" aria-label="Editar lançamento">\u270E</button>';
-        html += '<button class="tx-delete" data-id="' + escapeHtml(t.id) + '" aria-label="Remover lançamento">\u00d7</button>';
-        html += '</div>';
-      });
-      html += '</div>';
-    }
-
-    html += '<div class="card">';
-    html += '<div class="card-header">Lançamentos recorrentes</div>';
-    if (!state.recurring || state.recurring.length === 0) {
-      html += '<div class="empty-state">Nenhum lançamento recorrente.<br>Marque "Repetir todo mês" ao criar um lançamento.</div>';
-    } else {
-      state.recurring.forEach(function (r) {
-        var rcolor = r.type === 'income' ? 'var(--teal)' : 'var(--rose)';
-        var rsign = r.type === 'income' ? '+' : '\u2212';
-        html += '<div class="rec-row">';
-        html += '<div class="rec-mid"><div class="rec-desc">' + escapeHtml(r.description) + '</div><div class="rec-cat">' + escapeHtml(r.category) + ' · todo mês</div></div>';
-        html += '<div class="rec-amount" style="color:' + rcolor + '">' + rsign + ' ' + formatCurrency(r.amount) + '</div>';
-        html += '<button class="rec-remove" data-id="' + escapeHtml(r.id) + '" aria-label="Remover recorrência">\u00d7</button>';
-        html += '</div>';
-      });
-    }
-    html += '</div>';
-
-    html += '<div class="card">';
-    html += '<div class="card-header">Backup dos dados</div>';
-    html += '<div class="backup-actions">';
-    html += '<button id="export-btn" class="btn-cancel">\u2B07 Exportar</button>';
-    html += '<label class="btn-cancel">\u2B06 Importar<input type="file" id="import-input" accept="application/json" style="display:none"></label>';
-    html += '</div>';
-    if (state.backupMsg) {
-      html += '<div class="backup-msg" style="color:' + (state.backupMsg.type === 'success' ? 'var(--teal)' : 'var(--rose)') + '">' + escapeHtml(state.backupMsg.text) + '</div>';
-    }
-    html += '</div>';
-
-    html += '<div class="footer-note">Lançamentos salvos automaticamente neste navegador.</div>';
-
-    document.getElementById('app').innerHTML = html;
-    bindEvents();
-  }
-
-  function bindEvents() {
-    var openFormBtn = document.getElementById('open-form-btn');
-    if (openFormBtn) openFormBtn.addEventListener('click', function () {
-      state.editingId = null;
-      state.form = blankForm();
-      state.formError = '';
-      state.showForm = true;
-      render();
-    });
-
-    var editLimitBtn = document.getElementById('edit-limit-btn');
-    if (editLimitBtn) editLimitBtn.addEventListener('click', function () { state.limitDraft = String(state.monthlyLimit); state.editingLimit = true; render(); });
-
-    var limitInput = document.getElementById('limit-input');
-    if (limitInput) limitInput.addEventListener('input', function (e) { state.limitDraft = e.target.value; });
-
-    var saveLimitBtn = document.getElementById('save-limit-btn');
-    if (saveLimitBtn) saveLimitBtn.addEventListener('click', handleSaveLimit);
-
-    var editGoalBtn = document.getElementById('edit-goal-btn');
-    if (editGoalBtn) editGoalBtn.addEventListener('click', function () { state.goalDraft = String(state.savingsGoal); state.editingGoal = true; render(); });
-
-    var goalInput = document.getElementById('goal-input');
-    if (goalInput) goalInput.addEventListener('input', function (e) { state.goalDraft = e.target.value; });
-
-    var saveGoalBtn = document.getElementById('save-goal-btn');
-    if (saveGoalBtn) saveGoalBtn.addEventListener('click', handleSaveGoal);
-
-    var typeIncomeBtn = document.getElementById('type-income-btn');
-    if (typeIncomeBtn) typeIncomeBtn.addEventListener('click', function () { state.form.type = 'income'; render(); });
-
-    var typeExpenseBtn = document.getElementById('type-expense-btn');
-    if (typeExpenseBtn) typeExpenseBtn.addEventListener('click', function () { state.form.type = 'expense'; render(); });
-
-    var amountInput = document.getElementById('amount-input');
-    if (amountInput) amountInput.addEventListener('input', function (e) { state.form.amount = e.target.value; });
-
-    var descInput = document.getElementById('desc-input');
-    if (descInput) descInput.addEventListener('input', function (e) { state.form.description = e.target.value; });
-
-    var categorySelect = document.getElementById('category-select');
-    if (categorySelect) categorySelect.addEventListener('change', function (e) { state.form.category = e.target.value; });
-
-    var dateInput = document.getElementById('date-input');
-    if (dateInput) dateInput.addEventListener('change', function (e) { state.form.date = e.target.value; });
-
-    var recurringCheckbox = document.getElementById('recurring-checkbox');
-    if (recurringCheckbox) recurringCheckbox.addEventListener('change', function (e) { state.form.recurring = e.target.checked; });
-
-    var submitBtn = document.getElementById('submit-btn');
-    if (submitBtn) submitBtn.addEventListener('click', handleAdd);
-
-    var cancelBtn = document.getElementById('cancel-btn');
-    if (cancelBtn) cancelBtn.addEventListener('click', function () { state.showForm = false; state.formError = ''; state.editingId = null; render(); });
-
-    var editBtns = document.querySelectorAll('.tx-edit');
-    for (var i = 0; i < editBtns.length; i++) {
-      editBtns[i].addEventListener('click', function (e) { handleEdit(e.currentTarget.getAttribute('data-id')); });
-    }
-
-    var deleteBtns = document.querySelectorAll('.tx-delete');
-    for (var j = 0; j < deleteBtns.length; j++) {
-      deleteBtns[j].addEventListener('click', function (e) { handleDelete(e.currentTarget.getAttribute('data-id')); });
-    }
-
-    var recRemoveBtns = document.querySelectorAll('.rec-remove');
-    for (var k = 0; k < recRemoveBtns.length; k++) {
-      recRemoveBtns[k].addEventListener('click', function (e) { handleRemoveRecurring(e.currentTarget.getAttribute('data-id')); });
-    }
-
-    var exportBtn = document.getElementById('export-btn');
-    if (exportBtn) exportBtn.addEventListener('click', handleExport);
-
-    var importInput = document.getElementById('import-input');
-    if (importInput) importInput.addEventListener('change', function (e) {
-      if (e.target.files && e.target.files[0]) handleImportFile(e.target.files[0]);
-    });
-  }
-
-  loadState();
-  applyRecurring();
-  render();
-})();
-</script>
-</body>
-</html>
+        state.monthlyLimit = typeof data.monthlyLimit === 'number' ? data.monthlyLimit : state.mo
